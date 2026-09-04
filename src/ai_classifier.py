@@ -1,16 +1,34 @@
-import openai
+import asyncio
 import json
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
+
+import openai
 from models import VideoInfo
-from config_manager import ConfigManager
+
+
+class AIClassifierError(RuntimeError):
+    """AI 请求或返回格式无法用于本批次分类。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        global_error: bool = False,
+        attempts: int = 1,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.global_error = global_error
+        self.attempts = attempts
 
 class AIClassifier:
     """
     使用AI模型对Bilibili视频进行分类。
     """
 
-    def __init__(self, ai_config: dict):
+    def __init__(self, ai_config: dict, max_retries: int = 3):
         """
         初始化AIClassifier。
 
@@ -22,6 +40,7 @@ class AIClassifier:
             api_key=self.config.get("openai_api_key"),
             base_url=self.config.get("openai_base_url"),
         )
+        self._max_retries = max(int(max_retries), 0)
 
     async def classify_video(self, video: VideoInfo, target_folders: List[str]) -> Optional[str]:
         """
@@ -64,7 +83,54 @@ class AIClassifier:
             print(f"An unexpected error occurred: {e}")
             return None
 
-    async def batch_classify_videos(self, videos: List[VideoInfo], target_folders: List[str]) -> List[Optional[str]]:
+    @staticmethod
+    def _error_from_exception(error: Exception) -> AIClassifierError:
+        status_code = getattr(error, "status_code", None)
+        retryable = status_code is None or status_code in (408, 409, 429) or status_code >= 500
+        global_error = status_code in (400, 401, 403, 404, 429) or not retryable
+        if status_code in (401, 403):
+            message = "AI 鉴权失败"
+        elif status_code == 429:
+            message = "AI 服务限流或配额不足"
+        elif status_code is not None and status_code >= 500:
+            message = f"AI 服务端临时错误 (HTTP {status_code})"
+        else:
+            message = "AI 请求失败"
+        return AIClassifierError(message, retryable=retryable, global_error=global_error)
+
+    @staticmethod
+    def _parse_classifications(content: str, expected_length: int) -> List[Optional[str]]:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content, re.IGNORECASE)
+        json_str = match.group(1) if match else content
+
+        try:
+            result_data: Any = json.loads(json_str)
+        except json.JSONDecodeError as exc:
+            raise AIClassifierError("AI 返回的内容不是有效 JSON") from exc
+
+        classifications: Any = result_data
+        if isinstance(result_data, dict):
+            classifications = result_data.get("classifications")
+            if classifications is None:
+                classifications = next(
+                    (value for value in result_data.values() if isinstance(value, list)),
+                    None,
+                )
+
+        if not isinstance(classifications, list) or len(classifications) != expected_length:
+            raise AIClassifierError("AI 返回的分类数量或格式不正确")
+
+        normalized: List[Optional[str]] = []
+        for classification in classifications:
+            if classification is None:
+                normalized.append(None)
+            elif isinstance(classification, str) and classification.strip():
+                normalized.append(classification.strip())
+            else:
+                normalized.append(None)
+        return normalized
+
+    async def _batch_classify_once(self, videos: List[VideoInfo], target_folders: List[str]) -> List[Optional[str]]:
         """
         对一批视频进行分类。
 
@@ -91,12 +157,13 @@ class AIClassifier:
 你的任务是：
 1. 仔细阅读每个视频的标题和描述。
 2. 从“分类列表”中为每个视频选择一个最匹配的分类。
-3. 严格按照输入视频的顺序，返回一个 JSON 数组，其中只包含每个视频对应的分类名称。数组的长度必须与输入的视频列表完全一致。
+3. 严格按照输入视频的顺序，返回一个 JSON 对象，其中的 classifications 数组只包含每个视频对应的分类名称。数组的长度必须与输入的视频列表完全一致。
+4. 如果信息不足以可靠分类，对应位置返回 null；不要猜测一个不合适的分类。
 
 例如，如果输入了3个视频，你的回答应该是这样的格式：
-["分类A", "分类B", "分类C"]
+{{"classifications": ["分类A", "分类B", null]}}
 
-请不要添加任何解释、序号或无关文字，只返回纯粹的 JSON 数组。
+请不要添加任何解释、序号或无关文字，只返回这个 JSON 对象。
 """
         messages = [
             {"role": "system", "content": "你是一个高效的Bilibili视频分类助手，专门处理批量分类请求并严格按照要求的JSON格式返回结果。"},
@@ -109,43 +176,30 @@ class AIClassifier:
                 messages=messages,
                 response_format={"type": "json_object"},
             )
-            if response.choices and response.choices[0].message.content:
-                content = response.choices[0].message.content
-                
-                # 提取被```json ...```包裹的JSON内容
-                match = re.search(r'```json\s*([\s\S]*?)\s*```', content, re.DOTALL)
-                if match:
-                    json_str = match.group(1)
-                else:
-                    json_str = content
+        except Exception as exc:
+            raise self._error_from_exception(exc) from exc
 
-                try:
-                    result_data = json.loads(json_str)
-                    classifications = None
-                    if isinstance(result_data, list):
-                        classifications = result_data
-                    elif isinstance(result_data, dict):
-                        # 兼容返回格式为 {"classifications": [...]} 的情况
-                        for key, value in result_data.items():
-                            if isinstance(value, list):
-                                classifications = value
-                                break
-                    
-                    if classifications and len(classifications) == len(videos):
-                        return classifications
-                    else:
-                        print(f"AI response format error or length mismatch. Got: {classifications}")
-                        return [None] * len(videos)
-                except json.JSONDecodeError:
-                    print(f"Failed to decode AI response as JSON: {content}")
-                    return [None] * len(videos)
-            return [None] * len(videos)
-        except openai.APIError as e:
-            print(f"An OpenAI API error occurred: {e}")
-            return [None] * len(videos)
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            return [None] * len(videos)
+        if not response.choices or not response.choices[0].message.content:
+            raise AIClassifierError("AI 返回为空")
+        return self._parse_classifications(
+            response.choices[0].message.content,
+            expected_length=len(videos),
+        )
+
+    async def batch_classify_videos(self, videos: List[VideoInfo], target_folders: List[str]) -> List[Optional[str]]:
+        """分类一批视频；临时错误有限重试，最终错误交给调用方处理。"""
+        last_error: Optional[AIClassifierError] = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                return await self._batch_classify_once(videos, target_folders)
+            except AIClassifierError as exc:
+                exc.attempts = attempt + 1
+                last_error = exc
+                if not exc.retryable or attempt >= self._max_retries:
+                    raise
+                await asyncio.sleep(min(2.0 * (2 ** attempt), 30.0))
+
+        raise last_error or AIClassifierError("AI 分类失败")
 
     async def close(self):
         """

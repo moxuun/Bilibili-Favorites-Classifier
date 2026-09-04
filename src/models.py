@@ -14,7 +14,9 @@ class Config(BaseModel):
     timeout: int = Field(30, description="请求超时时间（秒）")
     page_size: int = Field(24, description="每页获取的视频数量")
     max_pages: int = Field(100, description="最大获取页数")
-    ai_batch_size: int = Field(10, description="AI分析的批处理大小")
+    ai_batch_size: int = Field(50, description="AI分析的批处理大小")
+    verify_batch_size: int = Field(50, description="移动后批量核实的大小")
+    ai_concurrency: int = Field(4, description="同时进行的AI分类请求数")
 
 # --- 新增的B站认证相关模型 ---
 

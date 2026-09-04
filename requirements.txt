@@ -5,6 +5,7 @@ python-dotenv
 pydantic
 httpx
 openai
+aiohttp
 
 # B站认证相关
 qrcode

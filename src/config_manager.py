@@ -108,7 +108,9 @@ class ConfigManager:
             timeout=int(os.getenv("TIMEOUT", "30")),
             page_size=int(os.getenv("PAGE_SIZE", "24")),
             max_pages=int(os.getenv("MAX_PAGES", "100")),
-            ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "10"))
+            ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "50")),
+            verify_batch_size=int(os.getenv("VERIFY_BATCH_SIZE", "50")),
+            ai_concurrency=int(os.getenv("AI_CONCURRENCY", "4")),
         )
 
         logger.info("Configuration created successfully")
@@ -134,8 +136,10 @@ TIMEOUT=30
 PAGE_SIZE=24
 MAX_PAGES=100
 
-# AI分析配置
-AI_BATCH_SIZE=10
+# AI分析和流水线配置
+AI_BATCH_SIZE=50
+VERIFY_BATCH_SIZE=50
+AI_CONCURRENCY=4
 """
         
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -285,7 +289,9 @@ AI_BATCH_SIZE=10
             timeout=int(os.getenv("TIMEOUT", "30")),
             page_size=int(os.getenv("PAGE_SIZE", "24")),
             max_pages=int(os.getenv("MAX_PAGES", "100")),
-            ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "10"))
+            ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "50")),
+            verify_batch_size=int(os.getenv("VERIFY_BATCH_SIZE", "50")),
+            ai_concurrency=int(os.getenv("AI_CONCURRENCY", "4")),
         )
 
         logger.info("Interactive configuration created successfully")

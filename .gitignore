@@ -25,6 +25,7 @@ share/python-wheels/
 # Virtualenv
 .env
 .venv
+.uv-cache/
 env/
 venv/
 ENV/
@@ -37,5 +38,10 @@ ENV/
 .env
 *.log
 ai_config.json
+
+# Local account data and progress records
+bilibili_favorites_progress_*.csv*
+.bilibili_favorites_progress_*.csv.*
+
 # Downloaded files
 downloaded_videos/
